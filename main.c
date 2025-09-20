@@ -19,6 +19,9 @@ struct termios orig_termios;
 /*** TERMINAL FUNCTIONS ***/
 
 void die(const char *s) {
+
+    write(STDOUT_FILENO, "xb[2J",4);
+    write(STDOUT_FILENO, "xb[H",3);
     // Prints a descriptive error message and exits the program with a failure status.
     perror(s);
     exit(1);
@@ -73,9 +76,24 @@ char editorKeyRead() {
     return c;
 }
 
+/*** OUTPUT ***/
+
+void editorRefreshScreen() {
+    // Clear the full screen
+    write(STDOUT_FILENO, "\x1b[2J", 4);
+    // Reset cursor position row/colum [1;1H
+    write(STDOUT_FILENO, "\x1b[H", 3);
+}
+
 void editorProcessKeypress() {
     char const c = editorKeyRead();
-    if (c == CTRL_KEY('w')) exit(0);
+    switch(c){
+        case CTRL_KEY('q'):
+        write(STDOUT_FILENO, "\x1b[2J", 4);
+        write(STDOUT_FILENO, "\x1b[H", 3);
+        exit(0);
+            break;
+    }
 }
 
 /*** INIT ***/
@@ -85,7 +103,8 @@ int main() {
 
     // Main loop to read and process input.
     while (1) {
-      editorProcessKeypress();
-    return 0;
-};
+        editorRefreshScreen();
+        editorProcessKeypress();
+        return 0;
+    };
 }
