@@ -78,6 +78,15 @@ char editorKeyRead() {
 
 /*** OUTPUT ***/
 
+// Draws 20 rows of "@" symbols followed by a newline and a space.
+void editorDrawRows() {
+    for (int y = 0; y < 20; y++) {
+        write(STDOUT_FILENO, "#\r\n ", 3);
+
+    }
+}
+
+
 void editorRefreshScreen() {
     // Clear the full screen
     write(STDOUT_FILENO, "\x1b[2J", 4);
@@ -105,6 +114,8 @@ int main() {
     while (1) {
         editorRefreshScreen();
         editorProcessKeypress();
+        editorDrawRows();
+        write(STDOUT_FILENO, "\x1b[H", 3);
         return 0;
     };
 }
