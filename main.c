@@ -1,121 +1,280 @@
 /*** INCLUDES ***/
-
 #include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
 #include <termios.h>
 #include <unistd.h>
 
 /*** DEFINES ***/
-#define CTRL_KEY(k) ((k)& 0x1f)
+// Macro to simulate pressing Ctrl + a key.
+#define CTRL_KEY(k) ((k) & 0x1f)
+// Constant to initialize an empty append buffer.
+#define ABUF_INIT {NULL, 0}
+// Editor version.
+#define WADO_VERSION "0.0.1"
 
+// Enumeration for special keys to make the code more readable.
+// Starts at 1000 to avoid collision with regular character ASCII values.
+enum editorKey {
+    ARROW_LEFT = 1000,
+    ARROW_RIGHT,
+    ARROW_UP,
+    ARROW_DOWN
+};
 
 /*** DATA ***/
+// Structure to store the editor's global state.
+struct editorConfig {
+    int cx, cy; // Cursor X and Y coordinates.
+    struct termios orig_termios; // Original terminal attributes.
+    int screenrows; // Number of screen rows.
+    int screencols; // Number of screen columns.
+};
 
-// Stores the original terminal attributes to restore them on exit.
-struct termios orig_termios;
+// Global instance of the configuration.
+struct editorConfig config;
 
 /*** TERMINAL FUNCTIONS ***/
 
+// Function to handle fatal errors.
 void die(const char *s) {
-
-    write(STDOUT_FILENO, "xb[2J",4);
-    write(STDOUT_FILENO, "xb[H",3);
-    // Prints a descriptive error message and exits the program with a failure status.
+    // Clears the screen and positions the cursor at the top-left corner.
+    write(STDOUT_FILENO, "\x1b[2J", 4);
+    write(STDOUT_FILENO, "\x1b[H", 3);
+    // Prints the system error message along with our custom message.
     perror(s);
+    // Exits the program with a failure status.
     exit(1);
 }
 
+// Disables raw mode and restores the original terminal attributes.
 void disableRawMode() {
-    // Restores the original terminal attributes.
-    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios) == -1)
+    if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &config.orig_termios) == -1)
         die("tcsetattr");
 }
 
+// Enables raw mode for the terminal.
 void enableRawMode() {
-    // Gets the current terminal attributes.
-    if (tcgetattr(STDIN_FILENO, &orig_termios) == -1) die("tcgetattr");
-    // Schedules disableRawMode to be called automatically on program exit.
+    // Saves the current terminal attributes.
+    if (tcgetattr(STDIN_FILENO, &config.orig_termios) == -1) die("tcgetattr");
+    // Registers disableRawMode to be called on program exit.
     atexit(disableRawMode);
 
-    // Creates a copy of the original attributes to modify.
-    struct termios raw = orig_termios;
-
-    // c_iflag: Modifies input flags.
-    // Disables break signal, parity check, stripping 8th bit, Ctrl-S/Q, and CR-to-NL.
-    raw.c_iflag &= ~(BRKINT | INPCK | ISTRIP | ICRNL | IXON);
-
-    // c_oflag: Modifies output flags.
-    // Disables all output post-processing (e.g., converting '\n' to '\r\n').
+    // Creates a copy of the attributes to modify them.
+    struct termios raw = config.orig_termios;
+    // Disables several input flags for full control.
+    raw.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
+    // Disables output post-processing.
     raw.c_oflag &= ~(OPOST);
-
-    // c_cflag: Modifies control flags.
-    // Sets the character size to 8 bits per byte.
+    // Sets the character size to 8 bits.
     raw.c_cflag |= (CS8);
-
-    // Disables echo, canonical mode, signals (Ctrl-C, Ctrl-Z), and Ctrl-V.
+    // Disables echo, canonical mode, and signals (Ctrl+C, Ctrl+Z).
     raw.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
-
-    // c_cc: Sets control characters (timeout configuration).
-    // VMIN = 0: read() returns as soon as there is any data to read.
+    // Sets a timeout for input reading.
     raw.c_cc[VMIN] = 0;
-    // VTIME = 1: read() will wait for 100ms before timing out.
     raw.c_cc[VTIME] = 1;
 
-    // Applies the modified attributes to the terminal.
+    // Applies the new attributes to the terminal.
     if (tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == -1) die("tcsetattr");
 }
 
-char editorKeyRead() {
+// Reads a key from the user, handling escape sequences for arrow keys.
+int editorReadKey() {
     int nread;
     char c;
+    // Waits until a byte is read or until the timeout expires.
     while ((nread = read(STDIN_FILENO, &c, 1)) != 1) {
         if (nread == -1 && errno != EAGAIN) die("read");
     }
-    return c;
+
+    // If the byte is an escape character, try to read the rest of the sequence.
+    if (c == '\x1b') {
+        char seq[3];
+        // If the next two bytes can't be read, assume it was just the Esc key.
+        if (read(STDIN_FILENO, &seq[0], 1) != 1) return '\x1b';
+        if (read(STDIN_FILENO, &seq[1], 1) != 1) return '\x1b';
+
+        // If the sequence is '[A', '[B', etc., it translates it to our enum values.
+        if (seq[0] == '[') {
+            switch (seq[1]) {
+                case 'A': return ARROW_UP;
+                case 'B': return ARROW_DOWN;
+                case 'C': return ARROW_RIGHT;
+                case 'D': return ARROW_LEFT;
+            }
+        }
+        return '\x1b';
+    } else {
+        // Otherwise, it's a regular key.
+        return c;
+    }
+}
+
+// Gets the terminal window size.
+int getWindowSize(int *rows, int *cols) {
+    struct winsize ws;
+    // ioctl returns the window size in the ws struct.
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0) {
+        return -1;
+    } else {
+        *cols = ws.ws_col;
+        *rows = ws.ws_row;
+        return 0;
+    }
+}
+
+/*** APPEND BUFFER ***/
+// Structure for an append buffer (dynamic string).
+struct abuf {
+    char *b;  // Pointer to the buffer in memory.
+    int len;  // Current length of the buffer.
+};
+
+// Appends a string to the append buffer, resizing memory if necessary.
+void abAppend(struct abuf *ab, const char *s, int len) {
+    // Requests a new memory block of the old size + the new size.
+    char *new = realloc(ab->b, ab->len + len);
+    if (new == NULL) return;
+    // Copies the new string to the end of the buffer.
+    memcpy(&new[ab->len], s, len);
+    // Updates the buffer's pointer and length.
+    ab->b = new;
+    ab->len += len;
+}
+
+// Frees the memory used by the append buffer.
+void abFree(struct abuf *ab) {
+    free(ab->b);
 }
 
 /*** OUTPUT ***/
 
-// Draws 20 rows of "@" symbols followed by a newline and a space.
-void editorDrawRows() {
-    for (int y = 0; y < 20; y++) {
-        write(STDOUT_FILENO, "#\r\n ", 3);
+// Draws the status bar at the bottom of the screen.
+void editorDrawStatusBar(struct abuf *ab) {
+    // Activates inverted colors.
+    abAppend(ab, "\x1b[7m", 4);
 
+    char status[80];
+    int len = snprintf(status, sizeof(status), " Wado Editor -- Version %s", WADO_VERSION);
+    if (len > config.screencols) len = config.screencols;
+    abAppend(ab, status, len);
+
+    // Fills the rest of the bar with spaces.
+    while (len < config.screencols) {
+        abAppend(ab, " ", 1);
+        len++;
+    }
+    // Deactivates inverted colors.
+    abAppend(ab, "\x1b[m", 3);
+}
+
+// Draws the screen rows (for now, just tildes).
+void editorDrawRows(struct abuf *ab) {
+    for (int y = 0; y < config.screenrows; y++) {
+        // Draws a tilde at the beginning of each line.
+        abAppend(ab, "~", 1);
+
+        // Clears the rest of the line to avoid visual artifacts.
+        abAppend(ab, "\x1b[K", 3);
+
+        // Adds a newline, except on the last row.
+        if (y < config.screenrows - 1) {
+            abAppend(ab, "\r\n", 2);
+        }
     }
 }
 
-
+// Refreshes the entire screen.
 void editorRefreshScreen() {
-    // Clear the full screen
-    write(STDOUT_FILENO, "\x1b[2J", 4);
-    // Reset cursor position row/colum [1;1H
-    write(STDOUT_FILENO, "\x1b[H", 3);
+    struct abuf ab = ABUF_INIT;
+
+    // Hides the cursor, positions it at 1,1, and clears the screen.
+    abAppend(&ab, "\x1b[?25l", 6);
+    abAppend(&ab, "\x1b[H", 3);
+
+    // Draws the main content and the status bar.
+    editorDrawRows(&ab);
+    editorDrawStatusBar(&ab);
+
+    // Moves the cursor to its logical position (cx, cy).
+    char buf[32];
+    snprintf(buf, sizeof(buf), "\x1b[%d;%dH", config.cy + 1, config.cx + 1);
+    abAppend(&ab, buf, strlen(buf));
+
+    // Shows the cursor again.
+    abAppend(&ab, "\x1b[?25h", 6);
+
+    // Writes the entire buffer to the screen at once.
+    write(STDOUT_FILENO, ab.b, ab.len);
+    abFree(&ab);
 }
 
+/*** INPUT ***/
+// Updates the cursor coordinates (cx, cy) based on the key press.
+void editorMoveCursor(int key) {
+    switch (key) {
+        case ARROW_LEFT:
+            if (config.cx != 0) config.cx--;
+            break;
+        case ARROW_RIGHT:
+            if (config.cx != config.screencols - 1) config.cx++;
+            break;
+        case ARROW_UP:
+            if (config.cy != 0) config.cy--;
+            break;
+        case ARROW_DOWN:
+            if (config.cy < config.screenrows - 1) config.cy++;
+            break;
+    }
+}
+
+// Processes the key pressed by the user.
 void editorProcessKeypress() {
-    char const c = editorKeyRead();
-    switch(c){
+    int c = editorReadKey();
+    switch (c) {
         case CTRL_KEY('q'):
-        write(STDOUT_FILENO, "\x1b[2J", 4);
-        write(STDOUT_FILENO, "\x1b[H", 3);
-        exit(0);
+            // On exit, clear the screen.
+            write(STDOUT_FILENO, "\x1b[2J", 4);
+            write(STDOUT_FILENO, "\x1b[H", 3);
+            exit(0);
+            break;
+
+        case ARROW_UP:
+        case ARROW_DOWN:
+        case ARROW_LEFT:
+        case ARROW_RIGHT:
+            editorMoveCursor(c);
             break;
     }
 }
 
 /*** INIT ***/
+// Initializes all fields of the global config structure.
+void initEditor() {
+    config.cx = 0;
+    config.cy = 0;
+    if (getWindowSize(&config.screenrows, &config.screencols) == -1)
+        die("getWindowSize");
 
+    // Reserves a row at the bottom for the status bar.
+    config.screenrows--;
+}
+
+// Main program function.
 int main() {
+    // Enables raw mode and initializes the editor.
     enableRawMode();
+    initEditor();
 
-    // Main loop to read and process input.
+    // Main program loop.
     while (1) {
         editorRefreshScreen();
         editorProcessKeypress();
-        editorDrawRows();
-        write(STDOUT_FILENO, "\x1b[H", 3);
-        return 0;
-    };
+    }
+
+    return 0;
 }
+
