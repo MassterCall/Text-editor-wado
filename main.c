@@ -22,7 +22,9 @@ enum editorKey {
     ARROW_LEFT = 1000,
     ARROW_RIGHT,
     ARROW_UP,
-    ARROW_DOWN
+    ARROW_DOWN,
+    PAGE_DOWN,
+    PAGE_UP,
 };
 
 /*** DATA ***/
@@ -99,11 +101,22 @@ int editorReadKey() {
 
         // If the sequence is '[A', '[B', etc., it translates it to our enum values.
         if (seq[0] == '[') {
-            switch (seq[1]) {
-                case 'A': return ARROW_UP;
-                case 'B': return ARROW_DOWN;
-                case 'C': return ARROW_RIGHT;
-                case 'D': return ARROW_LEFT;
+            if (seq[1] > '0' && seq[1] < '9') {
+                if (read(STDIN_FILENO, &seq[2], 1) != 1) return '\x1b';
+                if (seq[2] == '~') {
+                    switch (seq[1]) {
+                        case '5': return PAGE_UP;
+                        case '6': return PAGE_DOWN;
+                    }
+                }
+            }
+            else {
+                switch (seq[1]) {
+                    case 'A': return ARROW_UP;
+                    case 'B': return ARROW_DOWN;
+                    case 'C': return ARROW_RIGHT;
+                    case 'D': return ARROW_LEFT;
+                }
             }
         }
         return '\x1b';
@@ -173,7 +186,7 @@ void editorDrawStatusBar(struct abuf *ab) {
 
 // Draws the screen rows (for now, just tildes).
 void editorDrawRows(struct abuf *ab) {
-    for (int y = 0; y < config.screenrows; y++) {
+    for (int y = 0; y < config.screenrows -1; y++) {
         // Draws a tilde at the beginning of each line.
         abAppend(ab, "~", 1);
 
@@ -216,6 +229,7 @@ void editorRefreshScreen() {
 // Updates the cursor coordinates (cx, cy) based on the key press.
 void editorMoveCursor(int key) {
     switch (key) {
+
         case ARROW_LEFT:
             if (config.cx != 0) config.cx--;
             break;
@@ -228,6 +242,9 @@ void editorMoveCursor(int key) {
         case ARROW_DOWN:
             if (config.cy < config.screenrows - 1) config.cy++;
             break;
+        // Moves Cursor to top or bottom of thescreen.
+        case PAGE_DOWN: config.cy = config.screenrows - 1; break;
+        case PAGE_UP: config.cy = 0; config.cx = 0; break;
     }
 }
 
