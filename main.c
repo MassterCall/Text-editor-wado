@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/ioctl.h>
+#include <sys/types.h>
 #include <termios.h>
 #include <unistd.h>
 
@@ -25,15 +26,25 @@ enum editorKey {
     ARROW_DOWN,
     PAGE_DOWN,
     PAGE_UP,
+    HOME_KEY,
+    END_KEY,
+    DELETE_KEY
 };
 
 /*** DATA ***/
+// store each row text
+typedef struct textRow {
+    int size;
+    char * data;
+} textRow;
 // Structure to store the editor's global state.
 struct editorConfig {
     int cx, cy; // Cursor X and Y coordinates.
     struct termios orig_termios; // Original terminal attributes.
     int screenrows; // Number of screen rows.
     int screencols; // Number of screen columns.
+    int numrows;
+    textRow * rows;
 };
 
 // Global instance of the configuration.
@@ -105,18 +116,30 @@ int editorReadKey() {
                 if (read(STDIN_FILENO, &seq[2], 1) != 1) return '\x1b';
                 if (seq[2] == '~') {
                     switch (seq[1]) {
+                        case '1': return HOME_KEY;
+                        case '3': return DELETE_KEY;
+                        case '4': return END_KEY;
                         case '5': return PAGE_UP;
                         case '6': return PAGE_DOWN;
+                        case '7': return HOME_KEY;
+                        case '8': return END_KEY;
                     }
                 }
-            }
-            else {
+            } else {
                 switch (seq[1]) {
                     case 'A': return ARROW_UP;
                     case 'B': return ARROW_DOWN;
                     case 'C': return ARROW_RIGHT;
                     case 'D': return ARROW_LEFT;
+                    case 'H': return HOME_KEY;
+                    case 'F': return END_KEY;
                 }
+            }
+        }
+        else if (seq[0]== 'O') {
+            switch (seq[1]) {
+                case 'H': return HOME_KEY;
+                case 'F': return END_KEY;
             }
         }
         return '\x1b';
@@ -138,12 +161,40 @@ int getWindowSize(int *rows, int *cols) {
         return 0;
     }
 }
+/*** FILE IN AND OUT ***/
+// Appends a new row of text to the editor's rows.
+void editorAppendRow(char * s, size_t len) {
+    // Allocate memory for one more textRow
+    config.rows = realloc(config.rows, sizeof(textRow) * (config.numrows + 1));
+    // Set the new row's size and data
+    int ind = config.numrows;
+    config.rows[ind].size = len;
+    config.rows[ind].data = malloc (len + 1);
+    memcpy (config.rows[ind].data, s, len);
+    config.rows[ind].data[len] = '\0';
+    config.numrows++;
+}
+
+// Opens a file and loads its content into the editor (for now, just a welcome message).
+void editorOpen(FILE * nameFile) {
+    FILE * fp = fopen(nameFile, "r");
+    if (fp == NULL) {
+        die("fopen" );
+    }
+    char * line = NULL;
+    size_t linecap = 0;
+    ssize_t linelen;
+
+    editorAppendRow(line, strlen(line));
+}
+
+
 
 /*** APPEND BUFFER ***/
 // Structure for an append buffer (dynamic string).
 struct abuf {
-    char *b;  // Pointer to the buffer in memory.
-    int len;  // Current length of the buffer.
+    char *b; // Pointer to the buffer in memory.
+    int len; // Current length of the buffer.
 };
 
 // Appends a string to the append buffer, resizing memory if necessary.
@@ -159,7 +210,7 @@ void abAppend(struct abuf *ab, const char *s, int len) {
 }
 
 // Frees the memory used by the append buffer.
-void abFree(struct abuf *ab) {
+void abFree(struct abuf * ab) {
     free(ab->b);
 }
 
@@ -186,10 +237,14 @@ void editorDrawStatusBar(struct abuf *ab) {
 
 // Draws the screen rows (for now, just tildes).
 void editorDrawRows(struct abuf *ab) {
-    for (int y = 0; y < config.screenrows -1; y++) {
+    for (int y = 0 ; y < config.screenrows - 1; y++) {
+        if (y < config.numrows) {
+            abAppend(ab, config.rows[y].data,config.rows[y].size);
+        }
         // Draws a tilde at the beginning of each line.
-        abAppend(ab, "~", 1);
-
+        if (y >= (config.numrows )) {
+            abAppend(ab, "~", 1);
+        }
         // Clears the rest of the line to avoid visual artifacts.
         abAppend(ab, "\x1b[K", 3);
 
@@ -227,9 +282,13 @@ void editorRefreshScreen() {
 
 /*** INPUT ***/
 // Updates the cursor coordinates (cx, cy) based on the key press.
-void editorMoveCursor(int key) {
+void editorMoveCursor(int const key) {
     switch (key) {
-
+        case PAGE_DOWN: config.cy = config.screenrows -1; break;
+        case PAGE_UP: config.cy = 0;    break;
+        case HOME_KEY: config.cx = 0;   break;
+        case END_KEY: config.cx =config.screencols - 1; break;
+        case DELETE_KEY: break;
         case ARROW_LEFT:
             if (config.cx != 0) config.cx--;
             break;
@@ -242,9 +301,7 @@ void editorMoveCursor(int key) {
         case ARROW_DOWN:
             if (config.cy < config.screenrows - 1) config.cy++;
             break;
-        // Moves Cursor to top or bottom of thescreen.
-        case PAGE_DOWN: config.cy = config.screenrows - 1; break;
-        case PAGE_UP: config.cy = 0; config.cx = 0; break;
+
     }
 }
 
@@ -263,6 +320,11 @@ void editorProcessKeypress() {
         case ARROW_DOWN:
         case ARROW_LEFT:
         case ARROW_RIGHT:
+        case PAGE_UP:
+        case PAGE_DOWN:
+        case HOME_KEY:
+        case END_KEY:
+        case DELETE_KEY:
             editorMoveCursor(c);
             break;
     }
@@ -273,6 +335,8 @@ void editorProcessKeypress() {
 void initEditor() {
     config.cx = 0;
     config.cy = 0;
+    config.numrows = 0;
+    config.rows = NULL;
     if (getWindowSize(&config.screenrows, &config.screencols) == -1)
         die("getWindowSize");
 
@@ -281,11 +345,18 @@ void initEditor() {
 }
 
 // Main program function.
-int main() {
+int main(int argc , char *argv[]) {
+    if (argc < 2) {
+        die("No file name provided");
+    }
+    FILE * nameFile = argv[1];
+    editorOpen(argv[1]);
+
+
+
     // Enables raw mode and initializes the editor.
     enableRawMode();
     initEditor();
-
     // Main program loop.
     while (1) {
         editorRefreshScreen();
@@ -294,4 +365,3 @@ int main() {
 
     return 0;
 }
-
