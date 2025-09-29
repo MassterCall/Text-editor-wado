@@ -35,8 +35,9 @@ enum editorKey {
 // store each row text
 typedef struct textRow {
     int size;
-    char * data;
+    char *data;
 } textRow;
+
 // Structure to store the editor's global state.
 struct editorConfig {
     int cx, cy; // Cursor X and Y coordinates.
@@ -44,7 +45,7 @@ struct editorConfig {
     int screenrows; // Number of screen rows.
     int screencols; // Number of screen columns.
     int numrows;
-    textRow * rows;
+    textRow *rows;
 };
 
 // Global instance of the configuration.
@@ -112,7 +113,7 @@ int editorReadKey() {
 
         // If the sequence is '[A', '[B', etc., it translates it to our enum values.
         if (seq[0] == '[') {
-            if (seq[1] > '0' && seq[1] < '9') {
+            if (seq[1] >= '0' && seq[1] <= '9') {
                 if (read(STDIN_FILENO, &seq[2], 1) != 1) return '\x1b';
                 if (seq[2] == '~') {
                     switch (seq[1]) {
@@ -135,8 +136,7 @@ int editorReadKey() {
                     case 'F': return END_KEY;
                 }
             }
-        }
-        else if (seq[0]== 'O') {
+        } else if (seq[0] == 'O') {
             switch (seq[1]) {
                 case 'H': return HOME_KEY;
                 case 'F': return END_KEY;
@@ -161,33 +161,45 @@ int getWindowSize(int *rows, int *cols) {
         return 0;
     }
 }
+
 /*** FILE IN AND OUT ***/
 // Appends a new row of text to the editor's rows.
-void editorAppendRow(char * s, size_t len) {
+void editorAppendRow(char *s, size_t len) {
     // Allocate memory for one more textRow
     config.rows = realloc(config.rows, sizeof(textRow) * (config.numrows + 1));
+    if (config.rows == NULL) die("realloc");
     // Set the new row's size and data
     int ind = config.numrows;
+    // Allocate memory for the row's data and copy the string into it
     config.rows[ind].size = len;
-    config.rows[ind].data = malloc (len + 1);
-    memcpy (config.rows[ind].data, s, len);
+    config.rows[ind].data = malloc(len + 1);
+    memcpy(config.rows[ind].data, s, len);
+    // Null-terminate the string
     config.rows[ind].data[len] = '\0';
     config.numrows++;
 }
 
-// Opens a file and loads its content into the editor (for now, just a welcome message).
-void editorOpen(FILE * nameFile) {
-    FILE * fp = fopen(nameFile, "r");
-    if (fp == NULL) {
-        die("fopen" );
-    }
-    char * line = NULL;
+// Opens a file and loads its content into the editor.
+void editorOpen(char *nameFile) {
+    FILE *fp = fopen(nameFile, "r");
+    if (fp == NULL) die("fopen");
+
+    char *line = NULL;
     size_t linecap = 0;
     ssize_t linelen;
-
-    editorAppendRow(line, strlen(line));
+    // FIX: Read each line from the file until getline returns -1
+    while ((linelen = getline(&line, &linecap, fp)) != -1) {
+        // Remove trailing newline or carriage return characters
+        while (linelen > 0 && (line[linelen - 1] == '\n' || line[linelen - 1] == '\r')) {
+            linelen--;
+        }
+        // FIX: Append the processed line inside the loop
+        editorAppendRow(line, linelen);
+    }
+    // FIX: Clean up memory used by getline and close the file
+    free(line);
+    fclose(fp);
 }
-
 
 
 /*** APPEND BUFFER ***/
@@ -210,7 +222,7 @@ void abAppend(struct abuf *ab, const char *s, int len) {
 }
 
 // Frees the memory used by the append buffer.
-void abFree(struct abuf * ab) {
+void abFree(struct abuf *ab) {
     free(ab->b);
 }
 
@@ -235,23 +247,23 @@ void editorDrawStatusBar(struct abuf *ab) {
     abAppend(ab, "\x1b[m", 3);
 }
 
-// Draws the screen rows (for now, just tildes).
+// Draws the screen rows (file content or tildes).
 void editorDrawRows(struct abuf *ab) {
-    for (int y = 0 ; y < config.screenrows - 1; y++) {
+    // Loop through all the rows available for the text area.
+    for (int y = 0; y < config.screenrows - 1; y++) {
+        // Check if the current screen row corresponds to a text row.
         if (y < config.numrows) {
-            abAppend(ab, config.rows[y].data,config.rows[y].size);
-        }
-        // Draws a tilde at the beginning of each line.
-        if (y >= (config.numrows )) {
+            // If it does, draw the text.
+            abAppend(ab, config.rows[y].data, config.rows[y].size);
+        } else {
+            // Otherwise, draw a tilde.
             abAppend(ab, "~", 1);
         }
         // Clears the rest of the line to avoid visual artifacts.
         abAppend(ab, "\x1b[K", 3);
 
-        // Adds a newline, except on the last row.
-        if (y < config.screenrows - 1) {
-            abAppend(ab, "\r\n", 2);
-        }
+        // Add a newline for every row to prepare for the status bar.
+        abAppend(ab, "\r\n", 2);
     }
 }
 
@@ -259,7 +271,7 @@ void editorDrawRows(struct abuf *ab) {
 void editorRefreshScreen() {
     struct abuf ab = ABUF_INIT;
 
-    // Hides the cursor, positions it at 1,1, and clears the screen.
+    // Hides the cursor, positions it at 1,1.
     abAppend(&ab, "\x1b[?25l", 6);
     abAppend(&ab, "\x1b[H", 3);
 
@@ -284,10 +296,14 @@ void editorRefreshScreen() {
 // Updates the cursor coordinates (cx, cy) based on the key press.
 void editorMoveCursor(int const key) {
     switch (key) {
-        case PAGE_DOWN: config.cy = config.screenrows -1; break;
-        case PAGE_UP: config.cy = 0;    break;
-        case HOME_KEY: config.cx = 0;   break;
-        case END_KEY: config.cx =config.screencols - 1; break;
+        case PAGE_DOWN: config.cy = config.screenrows - 1;
+            break;
+        case PAGE_UP: config.cy = 0;
+            break;
+        case HOME_KEY: config.cx = 0;
+            break;
+        case END_KEY: config.cx = config.screencols - 1;
+            break;
         case DELETE_KEY: break;
         case ARROW_LEFT:
             if (config.cx != 0) config.cx--;
@@ -299,9 +315,9 @@ void editorMoveCursor(int const key) {
             if (config.cy != 0) config.cy--;
             break;
         case ARROW_DOWN:
+            // FIX: Allow cursor to move to the line just after the last line of text.
             if (config.cy < config.screenrows - 1) config.cy++;
             break;
-
     }
 }
 
@@ -345,18 +361,16 @@ void initEditor() {
 }
 
 // Main program function.
-int main(int argc , char *argv[]) {
-    if (argc < 2) {
-        die("No file name provided");
-    }
-    FILE * nameFile = argv[1];
-    editorOpen(argv[1]);
-
-
-
+int main(int argc, char *argv[]) {
     // Enables raw mode and initializes the editor.
     enableRawMode();
     initEditor();
+
+    //Open the file specified in the command-line arguments, if any.
+    if (argc >= 2) {
+        editorOpen(argv[1]);
+    }
+
     // Main program loop.
     while (1) {
         editorRefreshScreen();
