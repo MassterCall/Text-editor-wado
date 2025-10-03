@@ -8,6 +8,7 @@
     #include <sys/types.h>
     #include <termios.h>
     #include <unistd.h>
+    #include <signal.h>
     #include "main.h" // Include the header file
     /*** DEFINES ***/
     // Macro to simulate pressing Ctrl + a key.
@@ -32,6 +33,8 @@
     };
 
     /*** DATA ***/
+    // Flag to indicate window resize event.
+    volatile sig_atomic_t  windowResize = 0;
     // store each row text
     typedef struct textRow {
         int size;
@@ -103,8 +106,15 @@
         char c;
         // Waits until a byte is read or until the timeout expires.
         while ((nread = read(STDIN_FILENO, &c, 1)) != 1) {
-            if (nread == -1 && errno != EAGAIN) die("read");
+            if (nread == -1 && errno != EAGAIN && errno != EINTR) {
+                die("read");
+            }
+            if (nread == -1 && errno == EINTR) {
+                continue;
+            }
+
         }
+
 
         // If the byte is an escape character, try to read the rest of the sequence.
         if (c == '\x1b') {
@@ -294,12 +304,17 @@
         abFree(&ab);
     }
     void scroll() {
-        if (getWindowSize(&config.screenrows2,&config.screencols2) != getWindowSize(&config.screenrows,&config.screencols)) {
+        getWindowSize(&config.screenrows2,&config.screencols2);
             config.screenrows = config.screenrows2;
             config.screencols = config.screencols2;
             config.screenrows--;
+            windowResize = 0;
         }
+
+    void signalHandler(int sig) {
+            windowResize = 1;
     }
+
 
     /*** INPUT ***/
     // Updates the cursor coordinates (cx, cy) based on the key press.
@@ -338,8 +353,7 @@
                 // On exit, clear the screen.
                 write(STDOUT_FILENO, "\x1b[2J", 4);
                 write(STDOUT_FILENO, "\x1b[H", 3);
-                exit(0);
-                break;
+                die(0);
 
             case ARROW_UP:
             case ARROW_DOWN:
@@ -380,8 +394,13 @@
             editorOpen(argv[1]);
         }
 
+
         // Main program loop.
         while (1) {
+            signal(SIGWINCH, signalHandler);
+            if (windowResize == 1) {
+                scroll();
+            }
             editorRefreshScreen();
             editorProcessKeypress();
         }
